@@ -38,10 +38,10 @@ Inspired by Git's staging area, ZFS transactions, and the Command Pattern:
 ```
 
 **Why**:
-- Clean separation: AttrDict handles tree structure, Path handles filesystem operations
+- REPL-friendly: Tab completion works on attributes
 - Dual access: `node.path` (attribute) and `node['path']` (dict) both work
 - Composable: Leverage both APIs fully without fighting immutability
-- REPL-friendly: Tab completion works on attributes
+- Clean separation: AttrDict handles tree structure, Path handles filesystem operations
 
 **Rejected alternatives**:
 - Subclassing Path: Fights Path's immutability, adds complexity
