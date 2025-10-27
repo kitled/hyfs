@@ -217,7 +217,7 @@ One-liner convenience wrapper. Uses `fnmatch` for shell-style globs (`*.py`, `te
 
 ### Medium Term
 1. Write operations: `rename()`, `move()`, `copy()` returning Plan objects
-2. Content operations: `read()`, `write()` with sed-like transforms
+2. Content operations: `read()`, `write()` with `sed`-like transforms
 3. Tagging system (separate from tree structure)
 
 ### Long Term
