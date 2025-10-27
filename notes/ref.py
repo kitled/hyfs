@@ -1,4 +1,3 @@
-# Core Implementation
 import uuid
 import os
 import errno
@@ -19,6 +18,7 @@ class FSNode(AttrDict):
 class HyFS:
     def __init__(self):
         self.nodes = {}  # eid -> FSNode
+        self.path_index = {}  # path -> eid
         self.tags = defaultdict(set)  # tag_name -> {eid, ...}
         self.relations = defaultdict(lambda: defaultdict(set))  # eid -> {rel_type -> {eid, ...}}
     
@@ -33,6 +33,7 @@ class HyFS:
             **metadata
         )
         self.nodes[eid] = node
+        self.path_index[path] = eid
         return eid
     
     def get(self, eid):
@@ -40,12 +41,10 @@ class HyFS:
         return self.nodes[eid]
     
     def find_by_path(self, path):
-        """Find node by path (O(n) scan - could optimize with index)"""
+        """Find node by path (O(1) with index)"""
         path = Path(path)
-        for node in self.nodes.values():
-            if node.path == path:
-                return node
-        return None
+        eid = self.path_index.get(path)
+        return self.nodes.get(eid) if eid else None
     
     def tree(self, root_path=None):
         """Build hierarchical tree view from flat storage"""
@@ -116,6 +115,17 @@ def _compute_eid(path):
         else:
             raise
 
+def _compute_cid(path):
+    """Compute SHA256 content hash (ZFS-style) for a file."""
+    if not path.is_file():
+        return None
+    
+    h = sha256()
+    with open(path, 'rb') as f:
+        while chunk := f.read(65536):  # 64KB chunks
+            h.update(chunk)
+    return h.hexdigest()
+
 def scan_fs(root_path, include_metadata=False):
     """Scan filesystem and populate HyFS flat storage"""
     hyfs = HyFS()
@@ -130,6 +140,16 @@ def scan_fs(root_path, include_metadata=False):
         hyfs.add_node(path, **metadata)
     
     return hyfs
+
+# Add cid property to FSNode
+@property
+def cid(self):
+    """Lazy-computed content ID (SHA256 hash) for files"""
+    if 'cid' not in self:
+        self['cid'] = _compute_cid(self.path)
+    return self['cid']
+
+FSNode.cid = cid
 
 @patch
 def show(self:FSNode, indent=0):
@@ -153,3 +173,25 @@ def filter(self:FSNode, pred):
 def find(self:FSNode, pattern):
     """Find in tree node (works on tree view)"""
     return self.filter(lambda n: fnmatch(n.path.name, pattern))
+
+@patch
+def tag(self:HyFS, eid, tag):
+    """Add a tag to an eid (idempotent)"""
+    self.tags[tag].add(eid)
+
+@patch
+def untag(self:HyFS, eid, tag):
+    """Remove a tag from an eid (idempotent)"""
+    self.tags[tag].discard(eid)  # discard doesn't error if not present
+    if not self.tags[tag]:  # Clean up empty tag sets
+        del self.tags[tag]
+
+@patch
+def tagged(self:HyFS, tag):
+    """Get all eids with this tag"""
+    return self.tags[tag]  # Returns set (possibly empty)
+
+@patch
+def tags_of(self:HyFS, eid):
+    """Get all tags for this eid"""
+    return {tag for tag, eids in self.tags.items() if eid in eids}

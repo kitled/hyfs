@@ -1,439 +1,115 @@
-This updated design doc now:
-- Reflects the flat storage architecture
-- Explains the shift from hierarchical to flat + derived views
-- Documents all current working code
-- Provides complete code reference for new session
-- Maintains the philosophical foundations
-- Captures lessons learned from the refactor
-- Maps out clear future directions
-
------
-
 # HyFS Design Document
 > Hyper FileSystem - A filesystem abstraction with stable identity and semantic relationships
 
-## Overview
-HyFS is a Python-based filesystem management tool built on fastcore principles. It provides flat storage with stable entity identification (eids), enabling multiple derived views (tree, tags, relationships) from a single canonical representation. Designed for interactive exploration, filtering, semantic organization, and eventual manipulation.
+## Vision
+
+HyFS provides stable entity identification and semantic organization for filesystems. Files and directories get persistent identities (eids) that survive renames and moves, enabling tagging, relationship tracking, and multiple views of the same underlying data.
+
+Built for interactive exploration in SolveIT notebooks using fastcore principles.
 
 ## Core Philosophy
 
 ### Principle of Lean Information Form (LIF)
-Information must be expressed in its meaningful form, preserving integrity without requiring decoders. We store semantic structure directly, then decide display independently. This means:
-- Organize as objects, lists, or flat dicts—always fully meaningful
-- No ASCII art for tree branches (`├──`, `└──`)—these are display concerns, not data
-- Store nodes in flat dict keyed by `eid`, derive tree views from `path` relationships
-- Separation of data (flat) from presentation (tree, tags, relations)
 
-### LIF Lemma 1: Separation of Concerns
+Information must be expressed in its meaningful form, preserving integrity without requiring decoders. Store semantic structure directly, decide display independently.
+
+**LIF Lemma 1: Separation of Concerns**
+
 Three orthogonal concepts, stored separately:
 1. **Entity storage**: Flat dict `{eid -> node}` (canonical)
 2. **Filesystem hierarchy**: Derived from `path` relationships (view)
 3. **Semantic organization**: Tags and relations (metadata layer)
 
-Don't mix these—keep them separate:
-- Tags are many-to-many mappings: `{tag_name -> {eid, ...}}`
-- Relations are typed connections: `{eid -> {rel_type -> {eid, ...}}}`
-- Tree structure is computed on-demand from `path.parent` checks
+Don't mix these. Tags are many-to-many mappings. Relations are typed connections. Tree structure is computed on-demand from path relationships.
 
 ### The fastcore Way
-Methods return transformed data when possible, enabling chaining. `filter()` returns a flat `L` of nodes, not print output. This separates data transformation from presentation.
+
+Methods return transformed data when possible, enabling chaining. `filter()` returns a flat list of nodes, not print output. This separates data transformation from presentation.
 
 ### Make Side Effects Explicit and Deferrable
-Inspired by Git's staging area, ZFS transactions, and the Command Pattern:
+
+Inspired by Git's staging area and ZFS transactions:
 - **Read operations**: Immediate (work directly on flat storage)
 - **Write operations**: Return a Plan/Transaction object that can be inspected, then executed
 - Example: `plan = hyfs.rename(eid, 'newname')` → `plan.preview()` → `plan.execute()`
-- This provides safety, composability, and clear boundaries between observation and mutation
+
+Provides safety, composability, and clear boundaries between observation and mutation.
 
 ## Architecture Decisions
 
-### Data Structure: Flat Storage with Derived Views
-**Choice**: HyFS stores nodes in flat dict `{eid -> FSNode}`, derives tree structure on-demand
+### Flat Storage with Derived Views
 
-```python
-# Canonical storage: flat dict
-hyfs.nodes = {
-    'eid1': FSNode(path=Path('/app/data/file.py'), type='file', eid='eid1'),
-    'eid2': FSNode(path=Path('/app/data'), type='dir', eid='eid2'),
-    ...
-}
+**Choice**: Store nodes in flat dict `{eid -> FSNode}`, derive tree structure on-demand.
 
-# Derived view: tree constructed from path relationships
-tree = hyfs.tree('/app/data')  # Builds hierarchy on-demand
-```
+**Why flat**:
+- O(1) lookup by eid
+- No nested traversal for global operations
+- Tags/relations are just dicts
+- Multiple views from single source
+- Easy serialization
+- Scales better
 
-**Why flat storage**:
-- O(1) lookup by eid: `hyfs.get(eid)`
-- No nested traversal needed for global operations
-- Tags/relations are just dicts: `{'important': {'eid1', 'eid2'}}`
-- Multiple views from single source: tree by path, tree by tags, graph by imports
-- Easy serialization: flat dict → JSON
-- Scales better: 100K nodes = 100K dict entries, not nested recursion
-
-**Why derived tree views**:
-- Tree structure is implicit in `path` property
-- Compute hierarchy when needed: `path.parent == other.path`
+**Why derived trees**:
+- Tree structure implicit in `path` property
+- Compute hierarchy when needed
 - Display is a view concern, not data concern
-- Can build multiple trees: filesystem tree, tag tree, relation graph
+- Can build multiple trees: filesystem, tags, relations
 
-**FSNode as AttrDict**:
-```python
-class FSNode(AttrDict):
-    # Enables both node.path and node['path']
-    # REPL-friendly with tab completion
-    # Custom __getattribute__ to support @property decorators
-```
+### Entity Identification: UUID with xattr
 
-**Rejected alternatives**:
-- Hierarchical dict with `children`: Mixes data with one specific view, hard to query globally
-- Separate tree classes: More ceremony, fights the "data is just dicts" philosophy
-- Graph database: Overkill for MVP, harder to inspect/debug
+Every node gets a stable `eid` (Entity ID). Try to store UUID in xattr `user.hyfs.uuid`. If xattr unavailable, fall back to deterministic hash of `(st_dev, st_ino, st_mtime)`.
 
-### Filesystem Scanning: Flat Population
-```python
-def scan_fs(root_path, include_metadata=False):
-    """Scan filesystem and populate HyFS flat storage"""
-    hyfs = HyFS()
-    root_path = Path(root_path)
-    
-    # Walk entire tree, add each node to flat storage
-    for path in [root_path] + list(root_path.rglob('*')):
-        hyfs.add_node(path, **metadata)
-    
-    return hyfs
-```
+**Why `eid` not `fid`/`nid`**: Directories are entities too—structure has semantic meaning. `eid` sits at perfect abstraction level between content (`cid`) and filesystem implementation (`nid`).
 
-**Why flat scan**:
-- Simple iteration, no recursion needed
-- Fast: Only `path`, `type`, and `eid` collected upfront
-- Metadata on-demand: Add `size`, `mtime`, `cid` when needed
-- Scales: 100K files in <1 second
+### Content Addressing: Lazy SHA256
 
-**Process**:
-1. Walk filesystem with `rglob('*')`
-2. For each path: compute `eid`, create `FSNode`, store in `hyfs.nodes[eid]`
-3. Tree structure implicit in paths, reconstructed later
+`cid` property on `FSNode` computes SHA256 hash on first access, caches result. Uses ZFS-style 64KB streaming chunks. Returns `None` for directories.
 
-### Entity Identification: UUID with xattr Storage
+### Path Index: O(1) Lookups
 
-**Concept**: Every node (file or directory) gets a stable `eid` (Entity ID)
+Maintain `path_index = {path: eid}` updated in `add_node()`. Makes `find_by_path()` O(1) instead of O(n) scan.
 
-**Why `eid` not `fid`/`nid`**:
-- Directories are entities too—structure has semantic meaning before files exist
-- `fid` (file ID) excludes directories
-- `nid` (node ID) too bound to filesystem concept (inode)
-- `eid` sits at perfect abstraction: generic enough for any representation, specific enough to be meaningful
-- Conceptual hierarchy: `cid` (content) → `eid` (entity/metadata) → `nid` (filesystem-specific)
+### Tagging: Singular Operations
 
-**Storage strategy**:
-1. Try to read UUID from xattr `user.hyfs.uuid`
-2. If missing, generate UUID v4 (v7 not yet in Python stdlib)
-3. Try to store in xattr
-4. If xattr fails (unsupported fs, permissions), fall back to deterministic hash of `(st_dev, st_ino, st_mtime)`
+Four methods for many-to-many relationships:
+- `tag(eid, tag)` - add one tag to one eid
+- `untag(eid, tag)` - remove one tag from one eid  
+- `tagged(tag)` - get all eids with this tag
+- `tags_of(eid)` - get all tags for this eid
 
-**xattr tradeoffs**:
-- **Pros**: Atomic with file, survives renames within filesystem, standard POSIX
-- **Cons**: Lost on cloud sync, zip, basic copy; not supported on FAT32/exFAT
-- **Acceptable**: For SolveIT use case (Linux containers, modern fs), works 95% of time
-
-**Why not inode-only**:
-- Inodes change across filesystems (USB, network, backups)
-- Need identity to persist across hosts for multi-instance SolveIT usage
-- UUID provides stable identity even when filesystem metadata changes
-
-### Tree View Construction: On-Demand Hierarchy
-
-```python
-def tree(self, root_path=None):
-    """Build hierarchical tree view from flat storage"""
-    root_node = self.find_by_path(root_path)
-    return self._build_tree_node(root_node)
-
-def _build_tree_node(self, node):
-    """Recursively build tree structure for a node"""
-    tree_node = FSNode(node)  # Copy node data
-    
-    if node.type == 'dir':
-        # Find children: nodes whose path.parent == this path
-        children = []
-        for candidate in self.nodes.values():
-            if candidate.path.parent == node.path:
-                children.append(self._build_tree_node(candidate))
-        tree_node['children'] = children
-    
-    return tree_node
-```
-
-**Why on-demand**:
-- Tree is just one view of the data
-- Most operations work on flat storage (filter, tag, lookup)
-- Only build tree when displaying or traversing hierarchy
-- Can build multiple trees: full tree, filtered tree, tag-based tree
-
-**Performance**: O(n²) worst case (check every node for each parent), but acceptable for <10K nodes. Future optimization: maintain `path -> eid` index.
-
-### The AttrDict Property Problem
-
-**Challenge**: AttrDict's `__getattr__` intercepts attribute access, checking dict keys before class properties. This breaks `@property` decorators.
-
-**Solution**: Override `__getattribute__` to check class properties first:
-```python
-class FSNode(AttrDict):
-    def __getattribute__(self, key):
-        cls = object.__getattribute__(self, '__class__')
-        if key in cls.__dict__ and isinstance(cls.__dict__[key], property):
-            return cls.__dict__[key].fget(self)
-        return super().__getattribute__(key)
-```
-
-**Critical detail**: Use `@property` + manual attachment (`FSNode.eid = eid`), not `@patch(as_prop=True)`. The latter doesn't work with our `__getattribute__` override.
-
-**Future metadata as properties**: `size`, `mtime`, `cid` can be added as `@property` for lazy evaluation.
-
-## Method Design
-
-### HyFS Class Methods
-
-**`scan_fs(root_path, include_metadata=False)`**: Populate flat storage
-- Walks filesystem, creates FSNode for each path
-- Stores in `hyfs.nodes[eid]`
-- Returns HyFS instance
-
-**`add_node(path, eid=None, **metadata)`**: Add single node
-- Computes `eid` if not provided
-- Creates FSNode with path, type, eid, metadata
-- Stores in flat dict
-
-**`get(eid)`**: O(1) lookup by eid
-- Direct dict access: `self.nodes[eid]`
-- Fastest way to retrieve node
-
-**`find_by_path(path)`**: Find node by path
-- O(n) scan through nodes
-- Future: maintain `path -> eid` index for O(1)
-
-**`filter(pred)`**: Filter nodes by predicate
-- Returns flat `L` of matching nodes
-- Works on entire flat storage
-- Composable: `hyfs.filter(lambda n: n.type == 'file')`
-
-**`find(pattern)`**: Glob pattern matching
-- Convenience wrapper: `self.filter(lambda n: fnmatch(n.path.name, pattern))`
-- Returns flat `L` of matches
-
-**`tree(root_path=None)`**: Build tree view
-- Constructs hierarchical FSNode with `children`
-- Returns tree root node
-- Auto-detects root if only one exists
-
-### FSNode Methods (via @patch)
-
-**`show(indent=0)`**: Display tree recursively
-- Prints indented tree structure
-- Only works on tree view (needs `children`)
-- Simple MVP, future: colors, icons, depth limiting
-
-**`filter(pred)`**: Filter tree recursively
-- Returns flat `L` of matching nodes
-- Traverses `children` if present
-- Works on tree view
-
-**`find(pattern)`**: Find in tree
-- Convenience wrapper for `filter` with `fnmatch`
-- Works on tree view
-
-## Current Capabilities
-
-### Working Now
-1. **Flat storage**: 96 nodes in simple dict, O(1) lookup by eid
-2. **Tree view**: Derived hierarchy from path relationships
-3. **Dual querying**: Flat (`hyfs.find('*.py')`) and tree (`tree.find('*.py')`)
-4. **Stable identity**: eids persist in xattr, survive renames
-5. **Tags/relations ready**: Empty dicts waiting to be populated
-
-### Example Usage
-```python
-# Scan filesystem
-hyfs = scan_fs('/app/data/dev/hyfs/test/fs')
-
-# O(1) lookup
-node = hyfs.get('some-eid')
-
-# Find by pattern (flat)
-py_files = hyfs.find('*.py')
-
-# Build tree view
-tree = hyfs.tree('/app/data/dev/hyfs/test/fs')
-tree.show()
-
-# Find in tree (hierarchical)
-ipynb_files = tree.find('*.ipynb')
-
-# Tag files (future: add helper methods)
-hyfs.tags['important'].add(node.eid)
-```
-
-## Development Principles
-
-### Vertical Space Efficiency
-- Favor one-liners where clarity isn't sacrificed
-- Imports at top (no lazy imports unless heavy deps)
-- `@patch` for adding methods to classes
-
-### Fastcore Alignment
-- Use `L` for lists (chainable, better defaults)
-- Use `AttrDict` for dict-with-attributes
-- Use `@patch` to extend classes
-- Leverage Path objects for filesystem operations
-
-### Jeremy Howard's Design Process
-- Start simple, iterate toward elegance
-- REPL-driven development: optimize for tab completion, exploration
-- Composability over monolithic features
-- "Do one thing well" (Unix philosophy)
-
-### What We Avoid
-- Premature optimization (measure first)
-- Mixing concerns (storage ≠ display ≠ tags)
-- ASCII art in data structures
-- Schema-heavy approaches (dataclasses for dynamic data)
-- Ceremony (favor terse, clear code)
-
-## Code Style
-
-### Naming
-- Short where unambiguous: `eid`, `L`, `pred`, `cid`
-- Explicit where needed: `scan_fs`, `find_by_path`, `_compute_eid`
-- Unix-inspired: `find`, `filter`, `show`, `tree`
-
-### Structure
-1. Imports
-2. Class definitions (FSNode, HyFS)
-3. Helper functions (`_compute_eid`)
-4. Main functions (`scan_fs`)
-5. Methods (via `@patch`)
-6. Usage/tests
-
-### Comments
-- Docstrings for public methods
-- Inline comments for non-obvious logic
-- No redundant comments explaining obvious code
-
-## Future Directions
-
-### Immediate Next Steps
-1. **Tagging operations**: `hyfs.tag(eid, 'important')`, `hyfs.untag()`, `hyfs.tagged('important')`
-2. **Relations**: `hyfs.relate(eid1, 'imports', eid2)`, `hyfs.related(eid, 'imports')`
-3. **Content ID (cid)**: Hash file contents, detect duplicates, track content changes
-4. **Path index**: Maintain `path -> eid` dict for O(1) path lookups
-5. **Metadata properties**: `@property` for `size`, `mtime`, `permissions`
-
-### Medium Term
-1. **Filtered tree views**: `hyfs.tree(filter=lambda n: n.eid in tagged('important'))`
-2. **Write operations**: `rename()`, `move()`, `copy()` returning Plan objects
-3. **Serialization**: Save/load HyFS state (nodes, tags, relations) to JSON
-4. **Deduplication**: Content-based duplicate detection with resolution strategies
-5. **Snapshots**: Capture state at point in time, diff between snapshots
-
-### Long Term
-1. **Distributed filesystem index**: Multi-host UUID tracking, sync across instances
-2. **Semantic relationships**: Import graphs, generation lineage, reference tracking
-3. **Integration with SolveIT**: Dialog file management, notebook organization
-4. **CLI tool**: Shell-like interface with pipes and filters
-5. **FastHTML web interface**: Visual tree explorer with tagging UI
+Singular operations over variadic (Unix philosophy). Idempotent. Auto-cleanup empty tags. No validation, tags auto-create.
 
 ## What HyFS Enables
 
-### 1. Track files across renames (trivial)
-```python
-old_eid = node.eid
-# ... rename happens ...
-new_node = hyfs.get(old_eid)  # Still works
-```
+**Track files across renames**: eid persists through filesystem changes
 
-### 2. Detect duplicates (easy)
-```python
-from collections import defaultdict
-eid_map = defaultdict(list)
-for node in hyfs.filter(lambda n: n.type == 'file'):
-    eid_map[node.eid].append(node.path)
-duplicates = {eid: paths for eid, paths in eid_map.items() if len(paths) > 1}
-```
+**Detect duplicates**: Content-based deduplication via `cid`
 
-### 3. Compare trees (moderate)
-```python
-tree1 = scan_fs('/path')
-eids1 = set(tree1.nodes.keys())
-# ... changes happen ...
-tree2 = scan_fs('/path')
-eids2 = set(tree2.nodes.keys())
-added = eids2 - eids1
-removed = eids1 - eids2
-```
+**Compare trees**: Diff snapshots by eid to find added/removed/moved files
 
-### 4. Build change history (moderate)
-```python
-snapshots = []
-snapshots.append({'time': now(), 'hyfs': scan_fs('/path')})
-# Later: diff any two snapshots by eid
-```
+**Semantic relationships**: Tag files, build import graphs, track generation lineage
 
-### 5. Cross-filesystem tracking (advanced)
-```python
-# Track "this notebook exists on laptop, server, and backup"
-locations = {
-    'eid123': [
-        '/home/user/notebook.ipynb',
-        '/mnt/server/notebook.ipynb',
-        's3://backup/notebook.ipynb'
-    ]
-}
-```
+**Persistent selections**: Tags survive renames, moves, even filesystem boundaries
 
-### 6. Semantic relationships (advanced)
-```python
-# Build graph beyond filesystem hierarchy
-hyfs.relations[notebook_eid]['imports'].add(module_eid)
-hyfs.relations[notebook_eid]['generates'].add(output_eid)
-# Query: "What notebooks use this module?"
-```
+**Multiple views**: Same data, different perspectives—tree by path, tree by tags, graph by imports
 
-### 7. Persistent selections/tags (advanced)
-```python
-# Tags survive renames, moves
-hyfs.tags['important'].update({eid1, eid2, eid3})
-hyfs.tags['work-in-progress'].update({eid4, eid5})
-# Find all important files regardless of location
-important = [hyfs.get(eid) for eid in hyfs.tags['important']]
-```
+## Development Principles
 
-## Lessons Learned
+- **Vertical space efficiency**: Favor one-liners where clarity isn't sacrificed
+- **Fastcore alignment**: Use `L`, `AttrDict`, `@patch`, `Path`
+- **REPL-driven**: Optimize for tab completion and exploration
+- **Composability over monoliths**: Do one thing well
+- **No premature optimization**: Measure first
+- **No ceremony**: Terse, clear code
 
-### Flat vs Hierarchical Storage
-The original hierarchical dict approach mixed data (nodes) with one view (tree structure). Separating these into flat storage + derived views enables multiple perspectives (tree, tags, relations) without data duplication.
+## Future Directions
 
-### AttrDict + Properties
-AttrDict wasn't designed for class properties. Our `__getattribute__` override works but is a workaround. Future: consider if fastcore could add property support, or if we should use a different base class.
+**Immediate**: Relations API, filtered tree views, write operations (rename/move/copy as Plans)
 
-### UUID Version Drama
-Python 3.12 doesn't have uuid7 yet (still in discussion). uuid4 is fine for our needs, easy to migrate later.
+**Medium**: Serialization, deduplication, snapshots, metadata properties (size, mtime, permissions)
 
-### xattr Portability
-xattrs work great on modern Linux/macOS but fail on many consumer scenarios (cloud sync, FAT32). Deterministic fallback is essential. Future: consider sidecar metadata files for persistent tracking.
+**Long-term**: Multi-host tracking, semantic relationships (imports, lineage), FastHTML web interface, CLI tool
 
-### Performance Thresholds
-- <1K nodes: Any approach works
-- 1K-10K nodes: Flat storage wins, tree on-demand
-- 10K-100K nodes: Need path index for O(1) lookups
-- 100K+ nodes: Consider incremental scanning, lazy loading
+---
 
-## Meta: How We Work
-
-- **Incremental understanding**: Build simple examples to grasp concepts before implementing
-- **Question assumptions**: "Why doesn't this exist?" often reveals antipatterns or limitations
-- **Book-quality prose**: Dense paragraphs over blog-style bullet points for deep insights
-- **Design before code**: Understand tradeoffs, then implement decisively
-- **Prototype as we design**: PoC validates decisions immediately
-- **Refactor boldly**: When design reveals better approach (hierarchical → flat), rewrite completely
-
-This is a living document. Update as HyFS evolves.
+*This is a living document. Update as HyFS evolves.*
