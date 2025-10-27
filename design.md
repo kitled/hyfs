@@ -193,6 +193,9 @@ One-liner convenience wrapper. Uses `fnmatch` for shell-style globs (`*.py`, `te
 - Explicit where needed: `build_tree`, `dict2obj`
 - Unix-inspired: `find`, `filter`, `show`
 
+> [!WARNING]
+> Be extremely careful with Python built-ins name collisions!
+
 ### Structure
 1. Imports
 2. Class definitions
