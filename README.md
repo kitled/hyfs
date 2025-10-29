@@ -12,6 +12,10 @@
 > 
 > As I explore the design of this project, it becomes its own thing. The name will be the result of reaching some v1.0 MVP, not something I can predict (because that's what it would be, since I'm using an exploratory approach whose destination is unknown even to me).
 
+----
+
+(tentative README)
+
 HyFS (`hyfs`) is a meta-filesystem, designed to logically handle entities (files, directories) across a variety of actual filesystems and storage units.
 
 The first implementation relies on `xattr` so remains confined to the POSIX-compliant world of UNIX/Linux.
