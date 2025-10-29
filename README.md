@@ -31,7 +31,7 @@ Things you should be able to do with a complete version of the code:
 
 
 - Elements / Entities are not tied to a specific type of object
-    - You can manipulate bits of text, parts of files, files themselves, directories, remote resources (SSH, fetch, HTTP API, whatever), arbitrary mixes of any "type", with the same tools and interfaces. It is agnostic in the same way you can grab a piece of paper, a notebook, and a mail in the same hand and use them side by side regardless of those objects "type".
+    - You can manipulate bits of text, parts of files, notebooks cells, whole files themselves, directories, remote resources (SSH, fetch, HTTP API, whatever), arbitrary mixes of any "type", with the same tools and interfaces. It is agnostic in the same way you can grab a piece of paper, a notebook, and a mail in the same hand and use them side by side regardless of those objects "type".
     - Compose "views" made of arbitrary entities (files, groups thereof, parts thereof). E.g this lets you insert your own bits and parts of notes in new and original ad hoc ways to suit your exact need at all times.
 
 - Unified memory space
