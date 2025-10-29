@@ -7,9 +7,10 @@
 > It went from `fsxp` (filesystem explorer) to `hyfs` (hyper filesystem) already.  
 > 
 > I'm considering calling it something like `hyes` (hyper entity system).  
-> "Entity", or any word meaning the idea of some element, is really what this is. Not some "file" system, even though it's evidently based on files. But its future evolution will transcend this boundary. Both within (extracting and considering pieces of files, notably using custom 'magics'), and without (distributing & merging stuff around).
+> "Entity", or any word meaning the idea of some element, is really what this is. Not some "file" system, even though it's evidently based on files. But its future evolution will transcend this boundary. Both within (extracting and considering pieces of files, notably using custom 'magics'), and without (distributing & merging stuff around).  
+> But this is most likely not the final name, either.
 > 
-> As I explore the design of this project, it becomes into its own thing. The name will be the result of reaching some v1.0 MVP, not something I can pre-plan.
+> As I explore the design of this project, it becomes its own thing. The name will be the result of reaching some v1.0 MVP, not something I can predict (because that's what it would be, since I'm using an exploratory approach whose destination is unknown even to me).
 
 HyFS (`hyfs`) is a meta-filesystem, designed to logically handle entities (files, directories) across a variety of actual filesystems and storage units.
 
